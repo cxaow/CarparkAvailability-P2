@@ -1,0 +1,300 @@
+{
+  "name": "Workflow A — Data Cleaning (v1)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "Carpark-Data-Cleaning",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "c187010f-15ff-439e-b5b6-5409a991e04c",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "position": [
+        1680,
+        4400
+      ],
+      "webhookId": "carpark-finder",
+      "typeVersion": 2.1
+    },
+    {
+      "parameters": {
+        "jsCode": "// ✅ Reads correctly from body where n8n puts it\nconst body = $json.body;\n\nconst location = String(body.location || '').trim();\nconst maxDistance = Number(body.max_distance_km || 5);\n\nif (!location) {\n  throw new Error('Please provide a location.');\n}\n\nreturn [{\n  json: {\n    location,\n    max_distance_km: Number.isFinite(maxDistance) && maxDistance > 0\n      ? maxDistance\n      : 5\n  }\n}];"
+      },
+      "id": "e04a0fe4-1118-493e-87de-e8212c18f356",
+      "name": "Prepare Request",
+      "type": "n8n-nodes-base.code",
+      "position": [
+        1920,
+        4400
+      ],
+      "typeVersion": 2
+    },
+    {
+      "parameters": {
+        "url": "https://www.onemap.gov.sg/api/common/elastic/search",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "searchVal",
+              "value": "={{ $json.location }}"
+            },
+            {
+              "name": "returnGeom",
+              "value": "Y"
+            },
+            {
+              "name": "getAddrDetails",
+              "value": "Y"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "9a7b4220-2cd0-47c9-aab5-eecefb21c59c",
+      "name": "OneMap Geocode",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [
+        2160,
+        4400
+      ],
+      "typeVersion": 4.4
+    },
+    {
+      "parameters": {
+        "url": "https://api.data.gov.sg/v1/transport/carpark-availability",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "api-key",
+              "value": "v2:a3b559fe24a23820affe66af40a56bf3a3ed9f2504adb7a382abea7c51fac276:E0g878JrcdGmpHHYdk82Kjh7j8Uli2Jl"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "a699ad73-cdf7-423f-ab9c-03bf33bb1121",
+      "name": "Get real-time parking availability data",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [
+        2400,
+        4240
+      ],
+      "typeVersion": 4.4
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $json.items || [];\nif (!items.length) return [];\n\nconst latest = items[items.length - 1];\nconst carparkData = latest.carpark_data || [];\nconst results = [];\n\nfor (const cp of carparkData) {\n  const carpark_number = cp.carpark_number;\n  const infoList = cp.carpark_info || [];\n  \n  let total_all = 0;\n  let avail_all = 0;\n  let hasCarLots = false;\n  \n  for (const info of infoList) {\n    const total = Number(info.total_lots) || 0;\n    const avail = Number(info.lots_available) || 0;\n    if (info.lot_type === 'C') hasCarLots = true;\n    total_all += total;\n    avail_all += avail;\n  }\n  \n  if (!hasCarLots || total_all <= 0) continue;\n  \n  results.push({\n    carpark_number: carpark_number,\n    total_lots: total_all,\n    lots_available: avail_all,\n    availability_pct: Math.round((avail_all / total_all) * 100)\n  });\n}\n\nreturn results;"
+      },
+      "id": "e244bb50-63c1-468c-9090-bafdf3d9c865",
+      "name": "Process Availability + SG Time",
+      "type": "n8n-nodes-base.code",
+      "position": [
+        2640,
+        4240
+      ],
+      "typeVersion": 2
+    },
+    {
+      "parameters": {
+        "url": "https://data.gov.sg/api/action/datastore_search?resource_id=d_23f946fa557947f93a8043bbef41dd09&limit=3000",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "api-key",
+              "value": "v2:a3b559fe24a23820affe66af40a56bf3a3ed9f2504adb7a382abea7c51fac276:E0g878JrcdGmpHHYdk82Kjh7j8Uli2Jl"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "b63a08b2-22af-48e7-94c4-8e6ce52dd5cc",
+      "name": "Get all carpark locations & coordinates",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [
+        2400,
+        4560
+      ],
+      "typeVersion": 4.4
+    },
+    {
+      "parameters": {
+        "jsCode": "const records = $json.result?.records || [];\nconst results = [];\n\nfor (const r of records) {\n  const easting = Number(r.x_coord);\n  const northing = Number(r.y_coord);\n\n  if (!Number.isFinite(easting) || !Number.isFinite(northing)) {\n    continue;\n  }\n\n  results.push({\n    carpark_number: String(r.car_park_no || ''),\n    address: String(r.address || ''),\n    easting,\n    northing,\n    car_park_type: String(r.car_park_type || ''),\n    type_of_parking_system: String(r.type_of_parking_system || ''),\n  });\n}\n\nreturn results;"
+      },
+      "id": "d6f37f78-c9ff-4792-8d1c-d135969b35a9",
+      "name": "Process Carpark Locations",
+      "type": "n8n-nodes-base.code",
+      "position": [
+        2640,
+        4560
+      ],
+      "typeVersion": 2
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "fieldsToMatchString": "carpark_number",
+        "options": {}
+      },
+      "id": "5e0685e7-733d-4664-9fdc-ea870fafb78a",
+      "name": "Merge Availability + Locations",
+      "type": "n8n-nodes-base.merge",
+      "position": [
+        2880,
+        4400
+      ],
+      "typeVersion": 3.2
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================\n// HDB CARPARK FINDER — Smart & Accurate Location Search\n// ============================================================\n\n// ─── STEP 1: Get user input ─────────────────────────────────\nconst searchInput = $node[\"Prepare Request\"].json.location;\nconst maxDistKm = $node[\"Prepare Request\"].json.max_distance_km || 5;\n\nconsole.log(\"=\".repeat(60));\nconsole.log(\"🔍 Searching for:\", searchInput);\nconsole.log(\"📏 Radius:\", maxDistKm, \"km\");\nconsole.log(\"=\".repeat(60));\n\n// ─── STEP 2: Auto-detect Postal Code ────────────────────────\nconst postalMatch = searchInput.match(/\\b(\\d{6})\\b/);\nlet searchQuery = searchInput;\n\nif (postalMatch) {\n  searchQuery = postalMatch[1];\n  console.log(\"📮 Postal code detected → using exact location:\", searchQuery);\n} else {\n  console.log(\"🏷️  Using name search:\", searchQuery);\n}\n\n// ─── STEP 3: Get OneMap results ─────────────────────────────\nconst allResults = $node[\"OneMap Geocode\"].json.results || [];\n\nif (!allResults.length) {\n  throw new Error(`❌ No location found for: ${searchInput}\\nTry adding a postal code.`);\n}\n\nconsole.log(`📍 Found ${allResults.length} match(es) — selecting best...`);\n\n// ─── STEP 4: Pick best location match ────────────────────────\nlet bestMatch = null;\nlet highestScore = -1;\nconst searchLower = searchQuery.toLowerCase();\n\nfor (const result of allResults) {\n  const buildingName = (result.BUILDINGNAME || \"\").toLowerCase();\n  const displayName = (result.SEARCHVAL || \"\").toLowerCase();\n  const roadName = (result.ROAD || \"\").toLowerCase();\n  const fullAddress = (result.ADDRESS || \"\").toLowerCase();\n\n  let score = 0;\n  if (buildingName === searchLower || displayName === searchLower) score = 100;\n  else if (buildingName.includes(searchLower) || displayName.includes(searchLower)) score = 80;\n  else if (fullAddress.includes(searchLower)) score = 60;\n  else if (roadName.includes(searchLower)) score = 40;\n\n  if (result.BUILDINGNAME && result.BUILDINGNAME !== \"NIL\") score += 15;\n  if (result.SUBZONE && result.SUBZONE !== \"NIL\") score += 8;\n\n  if (score > highestScore) {\n    highestScore = score;\n    bestMatch = result;\n  }\n}\n\nif (!bestMatch) {\n  bestMatch = allResults[0];\n  console.log(\"⚠️  Using first result as fallback\");\n}\n\n// ─── STEP 5: Center coordinates ─────────────────────────────\nconst centerLat = Number(bestMatch.LATITUDE || bestMatch.lat || 0);\nconst centerLng = Number(bestMatch.LONGITUDE || bestMatch.lng || 0);\nconst displayName = bestMatch.BUILDINGNAME || bestMatch.SEARCHVAL || bestMatch.ADDRESS;\n\nconsole.log(\"✅ SELECTED:\", displayName);\nconsole.log(\"📍 Coords :\", centerLat.toFixed(6), \",\", centerLng.toFixed(6));\nconsole.log(\"⭐ Match  :\", highestScore, \"/ 100\");\n\n// ─── STEP 6: SVY21 → Lat/Lng converter ──────────────────────\nfunction svy21ToLatLng(easting, northing) {\n  if (!easting || !northing) return null;\n  const originE = 28001.642;\n  const originN = 38744.572;\n  const originLat = 1.366666;\n  const originLng = 103.833333;\n  const dN = northing - originN;\n  const dE = easting - originE;\n  const lat = originLat + (dN / 111320);\n  const lng = originLng + (dE / 111320) / Math.cos(originLat * Math.PI / 180);\n  return { lat, lng };\n}\n\n// ─── STEP 7: Distance calculator ────────────────────────────\nfunction getDistanceKm(lat1, lng1, lat2, lng2) {\n  if (!lat1 || !lng1 || !lat2 || !lng2) return 999;\n  const toRad = deg => deg * Math.PI / 180;\n  const dLat = toRad(lat2 - lat1);\n  const dLng = toRad(lng2 - lng1);\n  const a = Math.sin(dLat / 2) ** 2 +\n            Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) *\n            Math.sin(dLng / 2) ** 2;\n  return 6371 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));\n}\n\n// ─── STEP 8: Process all carparks ───────────────────────────\nconst allCarparks = $input.all();\nconst results = [];\n\nconsole.log(\"📥 Total matched carparks from Merge:\", allCarparks.length);\n\nfor (const item of allCarparks) {\n  const cp = item.json;\n\n  const coords = svy21ToLatLng(Number(cp.easting), Number(cp.northing));\n  if (!coords) continue;\n\n  const distance = getDistanceKm(centerLat, centerLng, coords.lat, coords.lng);\n  const softLimit = maxDistKm * 1.15;\n  if (distance > softLimit) continue;\n\n  const avail = Number(cp.lots_available) || 0;\n  const total = Number(cp.total_lots) || 0;\n  if (total <= 0) continue;\n\n  const availPct = Math.round((avail / total) * 100 * 10) / 10;\n\n  results.push({\n    car_park_no: cp.carpark_number,\n    carpark_number: cp.carpark_number,\n    address: cp.address || \"Address unavailable\",\n    lat: coords.lat,\n    lon: coords.lng,\n    distance_km: Math.round(distance * 100) / 100,\n    total_lots: total,\n    lots_available: avail,\n    availability_pct: availPct,\n    car_park_type: cp.car_park_type || \"\",\n    type_of_parking_system: cp.type_of_parking_system || \"\"\n  });\n}\n\n// ─── STEP 9: Sort & return ──────────────────────────────────\nconsole.log(\"✅ Final results within range:\", results.length);\nconsole.log(\"=\".repeat(60));\n\nreturn [{\n  json: {\n    destination: displayName,\n    search_radius_km: maxDistKm,\n    search_score: highestScore,\n    center: { lat: centerLat, lng: centerLng },\n    candidates_found: results.length,\n    carparks: results\n  }\n}];\n"
+      },
+      "id": "0d414cea-1958-46f5-9a39-458a7afaa0a5",
+      "name": "Format JSON Response",
+      "type": "n8n-nodes-base.code",
+      "position": [
+        3152,
+        4400
+      ],
+      "typeVersion": 2
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": {}
+      },
+      "id": "4693f87a-e0de-4dd0-b2aa-f02fae575016",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "position": [
+        3392,
+        4400
+      ],
+      "typeVersion": 1.4
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Prepare Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Request": {
+      "main": [
+        [
+          {
+            "node": "OneMap Geocode",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OneMap Geocode": {
+      "main": [
+        [
+          {
+            "node": "Get real-time parking availability data",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Get all carpark locations & coordinates",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get real-time parking availability data": {
+      "main": [
+        [
+          {
+            "node": "Process Availability + SG Time",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get all carpark locations & coordinates": {
+      "main": [
+        [
+          {
+            "node": "Process Carpark Locations",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Process Availability + SG Time": {
+      "main": [
+        [
+          {
+            "node": "Merge Availability + Locations",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Process Carpark Locations": {
+      "main": [
+        [
+          {
+            "node": "Merge Availability + Locations",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge Availability + Locations": {
+      "main": [
+        [
+          {
+            "node": "Format JSON Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format JSON Response": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "13626e9a-6b1b-4657-9092-c799ae541501",
+  "meta": {
+    "instanceId": "27e9650e6c89632aec9289e3e9daf95a5be865b3465c0fda159d907f386c13c2"
+  },
+  "nodeGroups": [],
+  "id": "OJFYyezoKG5JHtuy",
+  "tags": []
+}

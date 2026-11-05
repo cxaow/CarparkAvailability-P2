@@ -1,0 +1,251 @@
+{
+  "name": "AI Location Feedback (per carpark search)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "AI-Location-Feedback",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        1616,
+        480
+      ],
+      "id": "3322643a-b3d7-420f-83f1-692925fe594f",
+      "name": "Webhook",
+      "webhookId": "7a183fb3-8744-404f-90c1-520fdc723e7a"
+    },
+    {
+      "parameters": {
+        "jsCode": "const body = $input.first().json.body;\n\n// One item per carpark so the search node runs once for each address\nreturn (body.carparks || []).map((c, i) => ({\n  json: {\n    rank: i + 1,\n    car_park_no: c.car_park_no,\n    address: c.address,\n    destination: body.destination,\n    time_context: body.time_context\n  }\n}));"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1840,
+        480
+      ],
+      "id": "4c89341f-c30e-45b5-9873-37a0b399e49c",
+      "name": "Format Input"
+    },
+    {
+      "parameters": {
+        "url": "https://serpapi.com/search.json",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpQueryAuth",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "engine",
+              "value": "google"
+            },
+            {
+              "name": "q",
+              "value": "={{ $json.address }} Singapore road closure OR roadworks OR event OR accident today"
+            },
+            {
+              "name": "gl",
+              "value": "sg"
+            },
+            {
+              "name": "hl",
+              "value": "en"
+            },
+            {
+              "name": "num",
+              "value": "3"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 45000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2048,
+        480
+      ],
+      "id": "59b96fe5-d9bd-4d76-8ed2-e1b5da8ced48",
+      "name": "Search Incidents",
+      "credentials": {
+        "httpQueryAuth": {
+          "id": "FWA7qSsHP643SD0j",
+          "name": "Query Auth account"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const inputs = $('Format Input').all().map(i => i.json);\nconst results = $input.all();\n\nconst carparks = inputs.map((cp, i) => {\n  const resp = (results[i] && results[i].json) || {};\n\n  const stories = (resp.top_stories || []).map(s =>\n    `${s.title || ''} (${s.source || ''}${s.date ? ', ' + s.date : ''})`\n  );\n  const organic = (resp.organic_results || []).map(r =>\n    `${r.title || ''}: ${r.snippet || ''}${r.date ? ' (' + r.date + ')' : ''}`\n  );\n\n  // Keep it short: max 3 snippets per carpark, 200 characters each\n  const snippets = [...stories, ...organic]\n    .map(s => s.slice(0, 200))\n    .slice(0, 3);\n\n  return {\n    rank: cp.rank,\n    car_park_no: cp.car_park_no,\n    address: cp.address,\n    snippets\n  };\n});\n\nreturn [{\n  json: {\n    time_context: inputs[0] ? inputs[0].time_context : \"\",\n    destination: inputs[0] ? inputs[0].destination : \"\",\n    carparks\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2256,
+        480
+      ],
+      "id": "da938994-5760-44d2-b986-7368fe7e9515",
+      "name": "Condense Results"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Singapore HDB parking assistant. Today: {{ $json.time_context }}.\nDestination: {{ $json.destination }}\n\nBelow are search snippets for each carpark's address. Using ONLY these snippets, assess each carpark for road closures, roadworks, accidents or events today that could raise traffic or fill the carpark. Never invent incidents. If a carpark's snippets show nothing relevant, use \"clear\".\n\nReply with ONLY this JSON, one entry per carpark, same order:\n{\"ai_insights\":[{\"rank\":1,\"car_park_no\":\"\",\"status\":\"clear|caution|avoid\",\"explanations\":[\"one short sentence\"]}]}\n\nclear = nothing found. caution = nearby event or roadworks may raise traffic. avoid = active closure or major event.\nIf clear, the explanation is \"No known incidents or events\".\n\nCARPARKS AND SNIPPETS:\n{{ JSON.stringify($json.carparks) }}"
+      },
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.4,
+      "position": [
+        2464,
+        480
+      ],
+      "id": "2a0b08f4-3558-442a-924b-ec43ad17fc1c",
+      "name": "AI Analysis"
+    },
+    {
+      "parameters": {
+        "model": "qwen/qwen3.8-27b",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatGroq",
+      "typeVersion": 1,
+      "position": [
+        2464,
+        688
+      ],
+      "id": "079661d8-c75c-4319-ae5e-0f2c00129451",
+      "name": "Groq Chat Model",
+      "credentials": {
+        "groqApi": {
+          "id": "Zzo3GdPSTkvD2Z8M",
+          "name": "Groq account 3"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst first = $input.first().json;\nlet text = (first.text || first.output || first.response || \"\").trim();\n\n// Remove reasoning tags some models add\ntext = text.replace(/<think>[\\s\\S]*?<\\/think>/g, \"\").trim();\n\n// Remove markdown code fences\nif (text.startsWith(\"```\")) {\n  text = text.replace(/^```[^\\n]*\\n/, \"\").replace(/```\\s*$/, \"\").trim();\n}\n\n// Extract the JSON object\nconst jsonMatch = text.match(/\\{[\\s\\S]*\\}/);\nif (jsonMatch) text = jsonMatch[0];\n\n// Use the condensed carpark list to match AI results\nconst carparks = $(\"Condense Results\").first().json.carparks || [];\n\ntry {\n  const parsed = JSON.parse(text);\n\n  // Accept either key the model might use\n  const list = parsed.ai_insights || parsed.top_3_ai_insights || [];\n\n  const ai_insights = carparks.map((c, i) => {\n    const m = list.find(x =>\n      x.rank === c.rank ||\n      (x.car_park_no && x.car_park_no === c.car_park_no)\n    ) || list[i] || {};\n\n    const status = [\"clear\", \"caution\", \"avoid\"].includes(\n      String(m.status || \"\").toLowerCase()\n    )\n      ? String(m.status).toLowerCase()\n      : \"unknown\";\n\n    return {\n      rank: c.rank,\n      car_park_no: c.car_park_no,\n      status,\n      traffic_incident: status === \"caution\" || status === \"avoid\",\n      explanations:\n        Array.isArray(m.explanations) && m.explanations.length\n          ? m.explanations\n          : [\"Live check unavailable\"]\n    };\n  });\n\n  return [{ json: { ai_insights } }];\n\n} catch (err) {\n  // If AI output is invalid, don't claim an incident check succeeded\n  return [{\n    json: {\n      ai_insights: carparks.map(c => ({\n        rank: c.rank,\n        car_park_no: c.car_park_no,\n        status: \"unknown\",\n        traffic_incident_flag: false,\n        explanations: [\"Live check unavailable\"]\n      }))\n    }\n  }];\n}\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2800,
+        480
+      ],
+      "id": "ff7e3c48-8f88-445e-aff1-5d6637974bc7",
+      "name": "Clean JSON"
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        3008,
+        480
+      ],
+      "id": "b53d436d-c905-45e7-933c-b996180f2b52",
+      "name": "Respond to Webhook"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Format Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Input": {
+      "main": [
+        [
+          {
+            "node": "Search Incidents",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Search Incidents": {
+      "main": [
+        [
+          {
+            "node": "Condense Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Condense Results": {
+      "main": [
+        [
+          {
+            "node": "AI Analysis",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Analysis": {
+      "main": [
+        [
+          {
+            "node": "Clean JSON",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Clean JSON": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Groq Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Analysis",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "5c4c3f16-d462-47f1-a6d6-ae0161bfa129",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "27e9650e6c89632aec9289e3e9daf95a5be865b3465c0fda159d907f386c13c2"
+  },
+  "nodeGroups": [],
+  "id": "8mtZppEl8vlPzs3s",
+  "tags": []
+}
